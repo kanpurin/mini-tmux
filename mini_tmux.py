@@ -191,6 +191,7 @@ class TerminalScreen:
         self.cursor_x = 0
         self.cursor_y = 0
         self.saved_cursor = (0, 0)
+        self.alternate_saved_cursor = (0, 0)
         self.state = "normal"
         self.escape_buffer = ""
 
@@ -380,11 +381,16 @@ class TerminalScreen:
 
     def _private_mode(self, params: list[int], enabled: bool) -> None:
         if any(param in {47, 1047, 1049} for param in params):
-            self.use_alternate = enabled
             if enabled:
+                self.alternate_saved_cursor = (self.cursor_x, self.cursor_y)
+                self.use_alternate = True
                 self.alternate = self._blank_grid()
                 self.cursor_x = 0
                 self.cursor_y = 0
+            else:
+                self.use_alternate = False
+                self.cursor_x, self.cursor_y = self.alternate_saved_cursor
+                self._clamp_cursor()
 
     def reset(self) -> None:
         self.primary = self._blank_grid()
@@ -392,6 +398,7 @@ class TerminalScreen:
         self.use_alternate = False
         self.cursor_x = 0
         self.cursor_y = 0
+        self.alternate_saved_cursor = (0, 0)
 
     def _clamp_cursor(self) -> None:
         self.cursor_x = max(0, min(self.cols - 1, self.cursor_x))

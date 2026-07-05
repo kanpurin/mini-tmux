@@ -80,6 +80,18 @@ class LayoutTests(unittest.TestCase):
         self.assertTrue(any("shell" in line for line in lines))
         self.assertFalse(any("vim" in line for line in lines))
 
+    def test_alternate_screen_restores_prompt_position(self):
+        pane = Pane(1, -1, -1, "sh")
+
+        pane.feed(b"root@osboxes:# vim file\r\n")
+        pane.feed(b"\x1b[?1049h~\x1b[?1049l")
+        pane.feed(b"root@osboxes:# ")
+        lines, cursor = pane.view(10, 40)
+
+        self.assertEqual(lines[0], "root@osboxes:# vim file")
+        self.assertEqual(lines[1], "root@osboxes:#")
+        self.assertEqual(cursor, (15, 1))
+
 
 if __name__ == "__main__":
     unittest.main()
