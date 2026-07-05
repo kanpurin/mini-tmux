@@ -168,18 +168,16 @@ def pane_frame(
     total_rows = max(1, total_rows)
     left = max(0, min(total_cols - 1, x))
     top = max(0, min(total_rows - 1, y))
-    right = x + width if x + width < total_cols else x + width - 1
-    bottom = y + height if y + height < total_rows else y + height - 1
-    right = max(left, min(total_cols - 1, right))
-    bottom = max(top, min(total_rows - 1, bottom))
+    right = max(left, min(total_cols - 1, x + width - 1))
+    bottom = max(top, min(total_rows - 1, y + height - 1))
     if not framed:
         content_width = max(1, right - left + 1)
         content_height = max(1, bottom - top + 1)
         return left, top, right, bottom, left, top, content_width, content_height
-    content_x = min(total_cols - 1, left + 1)
-    content_y = min(total_rows - 1, top + 1)
-    content_width = max(1, right - content_x)
-    content_height = max(1, bottom - content_y)
+    content_x = min(total_cols - 1, left + (1 if left > 0 else 0))
+    content_y = min(total_rows - 1, top + (1 if top > 0 else 0))
+    content_width = max(1, right - content_x + 1)
+    content_height = max(1, bottom - content_y + 1)
     return left, top, right, bottom, content_x, content_y, content_width, content_height
 
 
@@ -576,6 +574,7 @@ class SessionServer:
             self._kill_window(self.active_window)
         elif cmd == "kill_session":
             self.stop()
+        self._resize_all_clients()
         self._broadcast_state()
         self._write_meta()
 
@@ -677,6 +676,10 @@ class SessionServer:
                 fcntl.ioctl(pane.master_fd, termios.TIOCSWINSZ, packed)
             except OSError:
                 pass
+
+    def _resize_all_clients(self) -> None:
+        for client in list(self.clients):
+            self._resize_active_panes(client)
 
     def _state_for(self, client: socket.socket) -> dict[str, Any]:
         rows = max(3, int(self.clients[client]["rows"]))
@@ -921,8 +924,8 @@ def draw(stdscr: Any, state: dict[str, Any], prefixed: bool) -> None:
         if content_width <= 0 or content_height <= 0:
             continue
         attr = pane_attr(curses, bool(pane.get("focused")))
-        if framed and right > left and bottom > top:
-            draw_box(stdscr, top, left, bottom, right, attr)
+        if framed:
+            draw_internal_borders(stdscr, tuple(rect), cols, pane_rows, attr)
         for line_index, line in enumerate(pane.get("lines", [])[-content_height:]):
             safe_addstr(stdscr, content_y + line_index, content_x, line[:content_width])
         if pane.get("focused"):
@@ -969,21 +972,26 @@ def status_attr(curses_mod: Any) -> int:
     return curses_mod.A_REVERSE
 
 
-def draw_box(stdscr: Any, top: int, left: int, bottom: int, right: int, attr: int) -> None:
+def draw_internal_borders(
+    stdscr: Any, rect: tuple[int, int, int, int], total_cols: int, total_rows: int, attr: int
+) -> None:
     import curses
 
-    if bottom <= top or right <= left:
-        return
-    for col in range(left + 1, right):
-        safe_addch(stdscr, top, col, curses.ACS_HLINE, attr)
-        safe_addch(stdscr, bottom, col, curses.ACS_HLINE, attr)
-    for row in range(top + 1, bottom):
-        safe_addch(stdscr, row, left, curses.ACS_VLINE, attr)
-        safe_addch(stdscr, row, right, curses.ACS_VLINE, attr)
-    safe_addch(stdscr, top, left, curses.ACS_ULCORNER, attr)
-    safe_addch(stdscr, top, right, curses.ACS_URCORNER, attr)
-    safe_addch(stdscr, bottom, left, curses.ACS_LLCORNER, attr)
-    safe_addch(stdscr, bottom, right, curses.ACS_LRCORNER, attr)
+    x, y, width, height = rect
+    right = x + width
+    bottom = y + height
+    if 0 < x < total_cols:
+        for row in range(max(0, y), min(total_rows, y + height)):
+            safe_addch(stdscr, row, x, curses.ACS_VLINE, attr)
+    if 0 < right < total_cols:
+        for row in range(max(0, y), min(total_rows, y + height)):
+            safe_addch(stdscr, row, right, curses.ACS_VLINE, attr)
+    if 0 < y < total_rows:
+        for col in range(max(0, x), min(total_cols, x + width)):
+            safe_addch(stdscr, y, col, curses.ACS_HLINE, attr)
+    if 0 < bottom < total_rows:
+        for col in range(max(0, x), min(total_cols, x + width)):
+            safe_addch(stdscr, bottom, col, curses.ACS_HLINE, attr)
 
 
 def safe_addch(stdscr: Any, y: int, x: int, char: Any, attr: int = 0) -> None:

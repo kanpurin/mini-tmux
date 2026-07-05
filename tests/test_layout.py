@@ -41,13 +41,12 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(choose_neighbor(rects, 2, "left"), 1)
         self.assertIsNone(choose_neighbor(rects, 1, "left"))
 
-    def test_pane_frame_shares_interior_border(self):
+    def test_pane_frame_uses_internal_border_only(self):
         left = pane_frame((0, 0, 40, 24), 80, 24)
         right = pane_frame((40, 0, 40, 24), 80, 24)
 
-        self.assertEqual(left[2], right[0])
-        self.assertEqual(left[6], 39)
-        self.assertEqual(right[6], 38)
+        self.assertEqual(left[4:], (0, 0, 40, 24))
+        self.assertEqual(right[4:], (41, 0, 39, 24))
 
     def test_single_pane_frame_uses_full_area_without_border(self):
         frame = pane_frame((0, 0, 80, 23), 80, 23, framed=False)
