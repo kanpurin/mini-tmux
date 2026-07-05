@@ -160,6 +160,25 @@ def choose_neighbor(rects: dict[int, tuple[int, int, int, int]], current: int, d
     return min(candidates)[1] if candidates else None
 
 
+def pane_frame(
+    rect: tuple[int, int, int, int], total_cols: int, total_rows: int
+) -> tuple[int, int, int, int, int, int, int, int]:
+    x, y, width, height = rect
+    total_cols = max(1, total_cols)
+    total_rows = max(1, total_rows)
+    left = max(0, min(total_cols - 1, x))
+    top = max(0, min(total_rows - 1, y))
+    right = x + width if x + width < total_cols else x + width - 1
+    bottom = y + height if y + height < total_rows else y + height - 1
+    right = max(left, min(total_cols - 1, right))
+    bottom = max(top, min(total_rows - 1, bottom))
+    content_x = min(total_cols - 1, left + 1)
+    content_y = min(total_rows - 1, top + 1)
+    content_width = max(1, right - content_x)
+    content_height = max(1, bottom - content_y)
+    return left, top, right, bottom, content_x, content_y, content_width, content_height
+
+
 class TerminalScreen:
     def __init__(self, rows: int = 24, cols: int = 80) -> None:
         self.rows = max(1, rows)
@@ -646,8 +665,7 @@ class SessionServer:
             pane = window.panes.get(pane_id)
             if not pane:
                 continue
-            inner_rows = max(1, height - 2)
-            inner_cols = max(1, width - 2)
+            _, _, _, _, _, _, inner_cols, inner_rows = pane_frame((x, y, width, height), cols, rows)
             pane.screen.resize(inner_rows, inner_cols)
             packed = struct.pack("HHHH", inner_rows, inner_cols, 0, 0)
             try:
@@ -671,9 +689,8 @@ class SessionServer:
             pane = window.panes.get(pane_id)
             if not pane:
                 continue
-            _, _, _, height = rect
-            _, _, width, _ = rect
-            lines, cursor = pane.view(max(1, height - 2), max(1, width - 2))
+            _, _, _, _, _, _, width, height = pane_frame(rect, cols, rows - 1)
+            lines, cursor = pane.view(height, width)
             panes.append(
                 {
                     "id": pane_id,
@@ -764,6 +781,12 @@ def client_attach(name: str) -> int:
         curses.curs_set(1)
         curses.noecho()
         curses.raw()
+        try:
+            curses.start_color()
+            curses.use_default_colors()
+            curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_GREEN)
+        except Exception:
+            pass
         stdscr.keypad(True)
         stdscr.nodelay(True)
         buffer = b""
@@ -878,52 +901,88 @@ def draw(stdscr: Any, state: dict[str, Any], prefixed: bool) -> None:
 
     stdscr.erase()
     rows, cols = stdscr.getmaxyx()
+    pane_rows = max(1, rows - 1)
     pane_by_id = {pane["id"]: pane for pane in state.get("panes", [])}
     for pane_id_text, rect in state.get("rects", {}).items():
         pane_id = int(pane_id_text)
         pane = pane_by_id.get(pane_id)
         if not pane:
             continue
-        x, y, width, height = rect
-        width = min(width, cols - x)
-        height = min(height, rows - 1 - y)
-        if width <= 0 or height <= 0:
+        left, top, right, bottom, content_x, content_y, content_width, content_height = pane_frame(
+            tuple(rect), cols, pane_rows
+        )
+        if right <= left or bottom <= top:
             continue
-        attr = curses.A_BOLD if pane.get("focused") else curses.A_NORMAL
-        draw_box(stdscr, y, x, height, width, attr)
-        title = f" {pane_id}:{pane.get('title', 'sh')} "
-        safe_addstr(stdscr, y, x + 1, title[: max(0, width - 2)], attr)
-        inner_width = max(0, width - 2)
-        inner_height = max(0, height - 2)
-        for line_index, line in enumerate(pane.get("lines", [])[-inner_height:]):
-            safe_addstr(stdscr, y + 1 + line_index, x + 1, line[:inner_width])
+        attr = pane_attr(curses, bool(pane.get("focused")))
+        draw_box(stdscr, top, left, bottom, right, attr)
+        for line_index, line in enumerate(pane.get("lines", [])[-content_height:]):
+            safe_addstr(stdscr, content_y + line_index, content_x, line[:content_width])
         if pane.get("focused"):
             cursor_x, cursor_y = pane.get("cursor", [0, 0])
-            cursor_y = max(0, min(inner_height - 1, int(cursor_y))) if inner_height else 0
-            cursor_x = max(0, min(inner_width - 1, int(cursor_x))) if inner_width else 0
+            cursor_y = max(0, min(content_height - 1, int(cursor_y))) if content_height else 0
+            cursor_x = max(0, min(content_width - 1, int(cursor_x))) if content_width else 0
             try:
-                stdscr.move(y + 1 + cursor_y, x + 1 + cursor_x)
+                stdscr.move(content_y + cursor_y, content_x + cursor_x)
             except Exception:
                 pass
+
+    draw_status(stdscr, state, prefixed, rows, cols)
+    stdscr.refresh()
+
+
+def pane_attr(curses_mod: Any, focused: bool) -> int:
+    if focused:
+        return curses_mod.A_BOLD
+    return curses_mod.A_DIM
+
+
+def draw_status(stdscr: Any, state: dict[str, Any], prefixed: bool, rows: int, cols: int) -> None:
+    import curses
 
     windows = []
     for window in state.get("windows", []):
         label = f"{window['index']}:{window['name']}"
-        windows.append(f"[{label}]" if window.get("active") else f" {label} ")
-    mode = "PREFIX" if prefixed else "Ctrl-b"
-    status = f" {state.get('session')} | {''.join(windows)} | {mode} d detach  % split-h  \" split-v  c new  x kill "
-    safe_addstr(stdscr, rows - 1, 0, status[:cols].ljust(cols), curses.A_REVERSE)
-    stdscr.refresh()
+        windows.append(f" {label}* " if window.get("active") else f" {label} ")
+    left = f"[{state.get('session')}] {''.join(windows)}"
+    right = "PREFIX" if prefixed else "C-b"
+    if state.get("focus") is not None:
+        right = f"pane {state.get('focus')} | {right}"
+    gap = max(1, cols - len(left) - len(right))
+    status = (left + " " * gap + right)[:cols]
+    safe_addstr(stdscr, rows - 1, 0, status.ljust(cols), status_attr(curses))
 
 
-def draw_box(stdscr: Any, y: int, x: int, height: int, width: int, attr: int) -> None:
-    if height < 2 or width < 2:
+def status_attr(curses_mod: Any) -> int:
+    try:
+        if curses_mod.has_colors():
+            return curses_mod.color_pair(1) | curses_mod.A_BOLD
+    except Exception:
+        pass
+    return curses_mod.A_REVERSE
+
+
+def draw_box(stdscr: Any, top: int, left: int, bottom: int, right: int, attr: int) -> None:
+    import curses
+
+    if bottom <= top or right <= left:
         return
-    safe_addstr(stdscr, y, x, "+" + "-" * (width - 2) + "+", attr)
-    for row in range(y + 1, y + height - 1):
-        safe_addstr(stdscr, row, x, "|", attr)
-        safe_addstr(stdscr, row, x + width - 1, "|", attr)
-    safe_addstr(stdscr, y + height - 1, x, "+" + "-" * (width - 2) + "+", attr)
+    for col in range(left + 1, right):
+        safe_addch(stdscr, top, col, curses.ACS_HLINE, attr)
+        safe_addch(stdscr, bottom, col, curses.ACS_HLINE, attr)
+    for row in range(top + 1, bottom):
+        safe_addch(stdscr, row, left, curses.ACS_VLINE, attr)
+        safe_addch(stdscr, row, right, curses.ACS_VLINE, attr)
+    safe_addch(stdscr, top, left, curses.ACS_ULCORNER, attr)
+    safe_addch(stdscr, top, right, curses.ACS_URCORNER, attr)
+    safe_addch(stdscr, bottom, left, curses.ACS_LLCORNER, attr)
+    safe_addch(stdscr, bottom, right, curses.ACS_LRCORNER, attr)
+
+
+def safe_addch(stdscr: Any, y: int, x: int, char: Any, attr: int = 0) -> None:
+    try:
+        stdscr.addch(y, x, char, attr)
+    except Exception:
+        pass
 
 
 def safe_addstr(stdscr: Any, y: int, x: int, text: str, attr: int = 0) -> None:

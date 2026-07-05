@@ -1,6 +1,6 @@
 import unittest
 
-from mini_tmux import Pane, choose_neighbor, compute_rects, leaf, pane_order, remove_from_layout, split_layout
+from mini_tmux import Pane, choose_neighbor, compute_rects, leaf, pane_frame, pane_order, remove_from_layout, split_layout
 
 
 class LayoutTests(unittest.TestCase):
@@ -40,6 +40,14 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(choose_neighbor(rects, 1, "right"), 2)
         self.assertEqual(choose_neighbor(rects, 2, "left"), 1)
         self.assertIsNone(choose_neighbor(rects, 1, "left"))
+
+    def test_pane_frame_shares_interior_border(self):
+        left = pane_frame((0, 0, 40, 24), 80, 24)
+        right = pane_frame((40, 0, 40, 24), 80, 24)
+
+        self.assertEqual(left[2], right[0])
+        self.assertEqual(left[6], 39)
+        self.assertEqual(right[6], 38)
 
     def test_pane_feed_keeps_crlf_lines(self):
         pane = Pane(1, -1, -1, "sh")
