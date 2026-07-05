@@ -14,9 +14,9 @@ tmux itself is not available. It uses only the Python standard library.
 - List and kill sessions.
 - Kill panes and windows.
 
-This is intentionally a small MVP, not a full terminal emulator. Normal shell
-workflows are supported, while complex full-screen terminal apps may not render
-perfectly yet.
+This is intentionally a small MVP, not a full terminal emulator. Shell workflows
+and basic full-screen terminal apps such as `vim` are supported, while more
+complex terminal control sequences may still need fixes.
 
 ## Usage
 

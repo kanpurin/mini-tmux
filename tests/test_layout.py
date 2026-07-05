@@ -45,9 +45,28 @@ class LayoutTests(unittest.TestCase):
         pane = Pane(1, -1, -1, "sh")
 
         pane.feed(b"echo hello\r\nhello\r\n")
+        lines, _ = pane.view(24, 80)
 
-        self.assertIn("echo hello", pane.lines)
-        self.assertIn("hello", pane.lines)
+        self.assertTrue(any("echo hello" in line for line in lines))
+        self.assertTrue(any("hello" in line for line in lines))
+
+    def test_pane_feed_handles_cursor_addressing(self):
+        pane = Pane(1, -1, -1, "sh")
+
+        pane.feed(b"\x1b[2J\x1b[3;5Hvim")
+        lines, cursor = pane.view(10, 20)
+
+        self.assertEqual(lines[2][4:7], "vim")
+        self.assertEqual(cursor, (7, 2))
+
+    def test_pane_feed_uses_alternate_screen(self):
+        pane = Pane(1, -1, -1, "sh")
+
+        pane.feed(b"shell\r\n\x1b[?1049hvim\x1b[?1049l")
+        lines, _ = pane.view(10, 20)
+
+        self.assertTrue(any("shell" in line for line in lines))
+        self.assertFalse(any("vim" in line for line in lines))
 
 
 if __name__ == "__main__":

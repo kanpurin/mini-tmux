@@ -13,7 +13,6 @@ import selectors
 import shutil
 import signal
 import socket
-import string
 import subprocess
 import sys
 import time
@@ -24,9 +23,6 @@ from typing import Any
 APP = "mini-tmux"
 PREFIX_KEY = "\x02"  # Ctrl-b
 MAX_HISTORY = 2000
-ANSI_RE = re.compile(
-    r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))"
-)
 
 
 def safe_name(name: str) -> str:
@@ -164,37 +160,240 @@ def choose_neighbor(rects: dict[int, tuple[int, int, int, int]], current: int, d
     return min(candidates)[1] if candidates else None
 
 
+class TerminalScreen:
+    def __init__(self, rows: int = 24, cols: int = 80) -> None:
+        self.rows = max(1, rows)
+        self.cols = max(1, cols)
+        self.primary = self._blank_grid()
+        self.alternate = self._blank_grid()
+        self.use_alternate = False
+        self.cursor_x = 0
+        self.cursor_y = 0
+        self.saved_cursor = (0, 0)
+        self.state = "normal"
+        self.escape_buffer = ""
+
+    def _blank_grid(self) -> list[list[str]]:
+        return [[" "] * self.cols for _ in range(self.rows)]
+
+    @property
+    def grid(self) -> list[list[str]]:
+        return self.alternate if self.use_alternate else self.primary
+
+    def resize(self, rows: int, cols: int) -> None:
+        rows = max(1, rows)
+        cols = max(1, cols)
+        if rows == self.rows and cols == self.cols:
+            return
+        self.primary = self._resize_grid(self.primary, rows, cols)
+        self.alternate = self._resize_grid(self.alternate, rows, cols)
+        self.rows = rows
+        self.cols = cols
+        self.cursor_y = min(self.cursor_y, self.rows - 1)
+        self.cursor_x = min(self.cursor_x, self.cols - 1)
+
+    def _resize_grid(self, grid: list[list[str]], rows: int, cols: int) -> list[list[str]]:
+        resized = []
+        for row in grid[:rows]:
+            resized.append((row + [" "] * cols)[:cols])
+        while len(resized) < rows:
+            resized.append([" "] * cols)
+        return resized
+
+    def feed(self, data: bytes) -> None:
+        text = data.decode("utf-8", errors="replace")
+        for char in text:
+            self._feed_char(char)
+
+    def _feed_char(self, char: str) -> None:
+        if self.state == "normal":
+            self._normal(char)
+        elif self.state == "esc":
+            self._escape(char)
+        elif self.state == "csi":
+            self.escape_buffer += char
+            if "@" <= char <= "~":
+                self._csi(self.escape_buffer[:-1], char)
+                self.state = "normal"
+                self.escape_buffer = ""
+        elif self.state == "osc":
+            if char == "\x07":
+                self.state = "normal"
+            elif char == "\x1b":
+                self.state = "osc_esc"
+        elif self.state == "osc_esc":
+            self.state = "normal" if char == "\\" else "osc"
+        elif self.state == "charset":
+            self.state = "normal"
+
+    def _normal(self, char: str) -> None:
+        if char == "\x1b":
+            self.state = "esc"
+        elif char == "\r":
+            self.cursor_x = 0
+        elif char == "\n":
+            self._linefeed()
+        elif char == "\b":
+            self.cursor_x = max(0, self.cursor_x - 1)
+        elif char == "\t":
+            target = min(self.cols - 1, ((self.cursor_x // 8) + 1) * 8)
+            while self.cursor_x < target:
+                self._put(" ")
+        elif ord(char) >= 32 and char != "\x7f":
+            self._put(char)
+
+    def _escape(self, char: str) -> None:
+        if char == "[":
+            self.state = "csi"
+            self.escape_buffer = ""
+        elif char == "]":
+            self.state = "osc"
+        elif char in {"(", ")", "*", "+", "-"}:
+            self.state = "charset"
+        elif char == "7":
+            self.saved_cursor = (self.cursor_x, self.cursor_y)
+            self.state = "normal"
+        elif char == "8":
+            self.cursor_x, self.cursor_y = self.saved_cursor
+            self._clamp_cursor()
+            self.state = "normal"
+        elif char == "c":
+            self.reset()
+            self.state = "normal"
+        else:
+            self.state = "normal"
+
+    def _put(self, char: str) -> None:
+        self.grid[self.cursor_y][self.cursor_x] = char
+        if self.cursor_x >= self.cols - 1:
+            self.cursor_x = 0
+            self._linefeed()
+        else:
+            self.cursor_x += 1
+
+    def _linefeed(self) -> None:
+        if self.cursor_y >= self.rows - 1:
+            self.grid.pop(0)
+            self.grid.append([" "] * self.cols)
+        else:
+            self.cursor_y += 1
+
+    def _csi(self, raw: str, final: str) -> None:
+        private = raw.startswith("?")
+        params = self._params(raw[1:] if private else raw)
+        first = params[0] if params else 0
+        if final in {"H", "f"}:
+            row = (params[0] if len(params) >= 1 and params[0] else 1) - 1
+            col = (params[1] if len(params) >= 2 and params[1] else 1) - 1
+            self.cursor_y = max(0, min(self.rows - 1, row))
+            self.cursor_x = max(0, min(self.cols - 1, col))
+        elif final == "A":
+            self.cursor_y = max(0, self.cursor_y - max(1, first))
+        elif final == "B":
+            self.cursor_y = min(self.rows - 1, self.cursor_y + max(1, first))
+        elif final == "C":
+            self.cursor_x = min(self.cols - 1, self.cursor_x + max(1, first))
+        elif final == "D":
+            self.cursor_x = max(0, self.cursor_x - max(1, first))
+        elif final == "G":
+            self.cursor_x = max(0, min(self.cols - 1, max(1, first) - 1))
+        elif final == "d":
+            self.cursor_y = max(0, min(self.rows - 1, max(1, first) - 1))
+        elif final == "J":
+            self._erase_display(first)
+        elif final == "K":
+            self._erase_line(first)
+        elif final == "X":
+            for offset in range(max(1, first)):
+                x = self.cursor_x + offset
+                if x < self.cols:
+                    self.grid[self.cursor_y][x] = " "
+        elif final == "P":
+            count = max(1, first)
+            row = self.grid[self.cursor_y]
+            del row[self.cursor_x : self.cursor_x + count]
+            row.extend([" "] * count)
+        elif final == "@":
+            count = max(1, first)
+            row = self.grid[self.cursor_y]
+            row[self.cursor_x : self.cursor_x] = [" "] * count
+            del row[self.cols :]
+        elif private and final in {"h", "l"}:
+            self._private_mode(params, final == "h")
+        elif final in {"m", "r", "s", "u", "h", "l"}:
+            return
+
+    def _params(self, raw: str) -> list[int]:
+        values = []
+        for part in raw.split(";"):
+            if not part:
+                values.append(0)
+                continue
+            digits = re.sub(r"[^0-9]", "", part)
+            values.append(int(digits) if digits else 0)
+        return values or [0]
+
+    def _erase_display(self, mode: int) -> None:
+        if mode == 2:
+            self.grid[:] = self._blank_grid()
+        elif mode == 1:
+            for y in range(0, self.cursor_y + 1):
+                end = self.cursor_x + 1 if y == self.cursor_y else self.cols
+                for x in range(0, end):
+                    self.grid[y][x] = " "
+        else:
+            for y in range(self.cursor_y, self.rows):
+                start = self.cursor_x if y == self.cursor_y else 0
+                for x in range(start, self.cols):
+                    self.grid[y][x] = " "
+
+    def _erase_line(self, mode: int) -> None:
+        if mode == 2:
+            start, end = 0, self.cols
+        elif mode == 1:
+            start, end = 0, self.cursor_x + 1
+        else:
+            start, end = self.cursor_x, self.cols
+        for x in range(start, end):
+            self.grid[self.cursor_y][x] = " "
+
+    def _private_mode(self, params: list[int], enabled: bool) -> None:
+        if any(param in {47, 1047, 1049} for param in params):
+            self.use_alternate = enabled
+            if enabled:
+                self.alternate = self._blank_grid()
+                self.cursor_x = 0
+                self.cursor_y = 0
+
+    def reset(self) -> None:
+        self.primary = self._blank_grid()
+        self.alternate = self._blank_grid()
+        self.use_alternate = False
+        self.cursor_x = 0
+        self.cursor_y = 0
+
+    def _clamp_cursor(self) -> None:
+        self.cursor_x = max(0, min(self.cols - 1, self.cursor_x))
+        self.cursor_y = max(0, min(self.rows - 1, self.cursor_y))
+
+    def lines(self) -> list[str]:
+        return ["".join(row).rstrip() for row in self.grid]
+
+
 @dataclasses.dataclass
 class Pane:
     pane_id: int
     master_fd: int
     pid: int
     title: str
-    lines: list[str] = dataclasses.field(default_factory=list)
-    current: str = ""
+    screen: TerminalScreen = dataclasses.field(default_factory=TerminalScreen)
 
     def feed(self, data: bytes) -> None:
-        text = data.decode("utf-8", errors="replace")
-        text = ANSI_RE.sub("", text)
-        text = text.replace("\r\n", "\n")
-        for char in text:
-            if char == "\n":
-                self.lines.append(self.current)
-                self.current = ""
-            elif char == "\r":
-                self.current = ""
-            elif char == "\b":
-                self.current = self.current[:-1]
-            elif char == "\t":
-                self.current += "    "
-            elif char in string.printable or ord(char) >= 0x80:
-                self.current += char
-        if len(self.lines) > MAX_HISTORY:
-            del self.lines[: len(self.lines) - MAX_HISTORY]
+        self.screen.feed(data)
 
-    def view(self, height: int) -> list[str]:
-        all_lines = self.lines + ([self.current] if self.current else [])
-        return all_lines[-max(0, height) :]
+    def view(self, height: int, width: int) -> tuple[list[str], tuple[int, int]]:
+        self.screen.resize(height, width)
+        return self.screen.lines(), (self.screen.cursor_x, self.screen.cursor_y)
 
 
 @dataclasses.dataclass
@@ -449,6 +648,7 @@ class SessionServer:
                 continue
             inner_rows = max(1, height - 2)
             inner_cols = max(1, width - 2)
+            pane.screen.resize(inner_rows, inner_cols)
             packed = struct.pack("HHHH", inner_rows, inner_cols, 0, 0)
             try:
                 fcntl.ioctl(pane.master_fd, termios.TIOCSWINSZ, packed)
@@ -472,12 +672,15 @@ class SessionServer:
             if not pane:
                 continue
             _, _, _, height = rect
+            _, _, width, _ = rect
+            lines, cursor = pane.view(max(1, height - 2), max(1, width - 2))
             panes.append(
                 {
                     "id": pane_id,
                     "title": pane.title,
                     "focused": pane_id == window.focus,
-                    "lines": pane.view(max(1, height - 2)),
+                    "lines": lines,
+                    "cursor": cursor,
                 }
             )
         return {
@@ -558,9 +761,9 @@ def client_attach(name: str) -> int:
     sock.setblocking(False)
 
     def run(stdscr: Any) -> int:
-        curses.curs_set(0)
+        curses.curs_set(1)
         curses.noecho()
-        curses.cbreak()
+        curses.raw()
         stdscr.keypad(True)
         stdscr.nodelay(True)
         buffer = b""
@@ -694,6 +897,14 @@ def draw(stdscr: Any, state: dict[str, Any], prefixed: bool) -> None:
         inner_height = max(0, height - 2)
         for line_index, line in enumerate(pane.get("lines", [])[-inner_height:]):
             safe_addstr(stdscr, y + 1 + line_index, x + 1, line[:inner_width])
+        if pane.get("focused"):
+            cursor_x, cursor_y = pane.get("cursor", [0, 0])
+            cursor_y = max(0, min(inner_height - 1, int(cursor_y))) if inner_height else 0
+            cursor_x = max(0, min(inner_width - 1, int(cursor_x))) if inner_width else 0
+            try:
+                stdscr.move(y + 1 + cursor_y, x + 1 + cursor_x)
+            except Exception:
+                pass
 
     windows = []
     for window in state.get("windows", []):
