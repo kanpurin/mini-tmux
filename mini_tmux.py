@@ -161,7 +161,7 @@ def choose_neighbor(rects: dict[int, tuple[int, int, int, int]], current: int, d
 
 
 def pane_frame(
-    rect: tuple[int, int, int, int], total_cols: int, total_rows: int
+    rect: tuple[int, int, int, int], total_cols: int, total_rows: int, framed: bool = True
 ) -> tuple[int, int, int, int, int, int, int, int]:
     x, y, width, height = rect
     total_cols = max(1, total_cols)
@@ -172,6 +172,10 @@ def pane_frame(
     bottom = y + height if y + height < total_rows else y + height - 1
     right = max(left, min(total_cols - 1, right))
     bottom = max(top, min(total_rows - 1, bottom))
+    if not framed:
+        content_width = max(1, right - left + 1)
+        content_height = max(1, bottom - top + 1)
+        return left, top, right, bottom, left, top, content_width, content_height
     content_x = min(total_cols - 1, left + 1)
     content_y = min(total_rows - 1, top + 1)
     content_width = max(1, right - content_x)
@@ -661,11 +665,12 @@ class SessionServer:
         rows = max(3, int(self.clients[client]["rows"]) - 1)
         cols = max(10, int(self.clients[client]["cols"]))
         rects = compute_rects(window.layout, 0, 0, cols, rows)
+        framed = len(rects) > 1
         for pane_id, (x, y, width, height) in rects.items():
             pane = window.panes.get(pane_id)
             if not pane:
                 continue
-            _, _, _, _, _, _, inner_cols, inner_rows = pane_frame((x, y, width, height), cols, rows)
+            _, _, _, _, _, _, inner_cols, inner_rows = pane_frame((x, y, width, height), cols, rows, framed)
             pane.screen.resize(inner_rows, inner_cols)
             packed = struct.pack("HHHH", inner_rows, inner_cols, 0, 0)
             try:
@@ -684,12 +689,13 @@ class SessionServer:
         if not window:
             return {"type": "state", "session": self.name, "windows": windows, "panes": [], "rects": {}, "focus": None}
         rects = compute_rects(window.layout, 0, 0, cols, rows - 1)
+        framed = len(rects) > 1
         panes = []
         for pane_id, rect in rects.items():
             pane = window.panes.get(pane_id)
             if not pane:
                 continue
-            _, _, _, _, _, _, width, height = pane_frame(rect, cols, rows - 1)
+            _, _, _, _, _, _, width, height = pane_frame(rect, cols, rows - 1, framed)
             lines, cursor = pane.view(height, width)
             panes.append(
                 {
@@ -903,18 +909,20 @@ def draw(stdscr: Any, state: dict[str, Any], prefixed: bool) -> None:
     rows, cols = stdscr.getmaxyx()
     pane_rows = max(1, rows - 1)
     pane_by_id = {pane["id"]: pane for pane in state.get("panes", [])}
+    framed = len(state.get("rects", {})) > 1
     for pane_id_text, rect in state.get("rects", {}).items():
         pane_id = int(pane_id_text)
         pane = pane_by_id.get(pane_id)
         if not pane:
             continue
         left, top, right, bottom, content_x, content_y, content_width, content_height = pane_frame(
-            tuple(rect), cols, pane_rows
+            tuple(rect), cols, pane_rows, framed
         )
-        if right <= left or bottom <= top:
+        if content_width <= 0 or content_height <= 0:
             continue
         attr = pane_attr(curses, bool(pane.get("focused")))
-        draw_box(stdscr, top, left, bottom, right, attr)
+        if framed and right > left and bottom > top:
+            draw_box(stdscr, top, left, bottom, right, attr)
         for line_index, line in enumerate(pane.get("lines", [])[-content_height:]):
             safe_addstr(stdscr, content_y + line_index, content_x, line[:content_width])
         if pane.get("focused"):

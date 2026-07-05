@@ -49,6 +49,11 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(left[6], 39)
         self.assertEqual(right[6], 38)
 
+    def test_single_pane_frame_uses_full_area_without_border(self):
+        frame = pane_frame((0, 0, 80, 23), 80, 23, framed=False)
+
+        self.assertEqual(frame, (0, 0, 79, 22, 0, 0, 80, 23))
+
     def test_pane_feed_keeps_crlf_lines(self):
         pane = Pane(1, -1, -1, "sh")
 
