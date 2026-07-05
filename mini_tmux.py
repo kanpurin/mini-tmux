@@ -181,6 +181,20 @@ def pane_frame(
     return left, top, right, bottom, content_x, content_y, content_width, content_height
 
 
+def pane_cursor_position(
+    rect: tuple[int, int, int, int],
+    total_cols: int,
+    total_rows: int,
+    cursor: tuple[int, int],
+    framed: bool,
+) -> tuple[int, int]:
+    _, _, _, _, content_x, content_y, content_width, content_height = pane_frame(rect, total_cols, total_rows, framed)
+    cursor_x, cursor_y = cursor
+    cursor_y = max(0, min(content_height - 1, int(cursor_y))) if content_height else 0
+    cursor_x = max(0, min(content_width - 1, int(cursor_x))) if content_width else 0
+    return content_y + cursor_y, content_x + cursor_x
+
+
 class TerminalScreen:
     def __init__(self, rows: int = 24, cols: int = 80) -> None:
         self.rows = max(1, rows)
@@ -920,6 +934,7 @@ def draw(stdscr: Any, state: dict[str, Any], prefixed: bool) -> None:
     pane_rows = max(1, rows - 1)
     pane_by_id = {pane["id"]: pane for pane in state.get("panes", [])}
     framed = len(state.get("rects", {})) > 1
+    final_cursor: tuple[int, int] | None = None
     for pane_id_text, rect in state.get("rects", {}).items():
         pane_id = int(pane_id_text)
         pane = pane_by_id.get(pane_id)
@@ -937,14 +952,14 @@ def draw(stdscr: Any, state: dict[str, Any], prefixed: bool) -> None:
             safe_addstr(stdscr, content_y + line_index, content_x, line[:content_width])
         if pane.get("focused"):
             cursor_x, cursor_y = pane.get("cursor", [0, 0])
-            cursor_y = max(0, min(content_height - 1, int(cursor_y))) if content_height else 0
-            cursor_x = max(0, min(content_width - 1, int(cursor_x))) if content_width else 0
-            try:
-                stdscr.move(content_y + cursor_y, content_x + cursor_x)
-            except Exception:
-                pass
+            final_cursor = pane_cursor_position(tuple(rect), cols, pane_rows, (int(cursor_x), int(cursor_y)), framed)
 
     draw_status(stdscr, state, prefixed, rows, cols)
+    if final_cursor is not None:
+        try:
+            stdscr.move(*final_cursor)
+        except Exception:
+            pass
     stdscr.refresh()
 
 

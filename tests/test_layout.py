@@ -1,6 +1,16 @@
 import unittest
 
-from mini_tmux import Pane, choose_neighbor, compute_rects, leaf, pane_frame, pane_order, remove_from_layout, split_layout
+from mini_tmux import (
+    Pane,
+    choose_neighbor,
+    compute_rects,
+    leaf,
+    pane_cursor_position,
+    pane_frame,
+    pane_order,
+    remove_from_layout,
+    split_layout,
+)
 
 
 class LayoutTests(unittest.TestCase):
@@ -52,6 +62,11 @@ class LayoutTests(unittest.TestCase):
         frame = pane_frame((0, 0, 80, 23), 80, 23, framed=False)
 
         self.assertEqual(frame, (0, 0, 79, 22, 0, 0, 80, 23))
+
+    def test_pane_cursor_position_maps_to_content_area(self):
+        cursor = pane_cursor_position((40, 0, 40, 24), 80, 24, (2, 3), framed=True)
+
+        self.assertEqual(cursor, (3, 43))
 
     def test_pane_feed_keeps_crlf_lines(self):
         pane = Pane(1, -1, -1, "sh")
